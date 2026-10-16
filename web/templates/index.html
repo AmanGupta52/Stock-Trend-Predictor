@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Trend Predictor</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">◢</span><div><h1>Stock Trend Predictor</h1><p>Yahoo Finance data · ML &amp; LSTM forecasts</p></div></div>
+  <form id="searchForm" class="search" autocomplete="off">
+    <div class="field">
+      <input id="q" name="q" type="search" placeholder="Company or symbol — RELIANCE.NS, TCS.NS, AAPL, MSFT" value="{{ default_ticker }}" aria-label="Company name or stock symbol" maxlength="60" required>
+      <ul id="suggest" class="suggest" hidden role="listbox"></ul>
+    </div>
+    <select id="period" aria-label="History length">
+      {% for p in periods if p != '1y' %}<option value="{{ p }}" {{ 'selected' if p == default_period }}>{{ p if p != 'max' else 'Max' }} history</option>{% endfor %}
+    </select>
+    <button id="go" class="primary" type="submit">Analyze</button>
+    <button id="refresh" type="button" class="ghost" title="Re-download data from Yahoo Finance" disabled>↻ Refresh data</button>
+    <label class="check" title="Retrain even if data is unchanged"><input type="checkbox" id="retrain"> Force retrain</label>
+  </form>
+</header>
+
+<main id="main">
+  <div id="status" class="status" hidden aria-live="polite">
+    <div class="bar"><i id="barfill"></i></div><span id="statusMsg"></span>
+  </div>
+  <div id="error" class="alert error" hidden role="alert"></div>
+  <div id="warnings" class="alert warn" hidden></div>
+
+  <section id="empty" class="empty card">
+    <h2>Search any stock</h2>
+    <p>Type a company name or ticker. Indian stocks use <code>.NS</code> (NSE) or <code>.BO</code> (BSE); US stocks need no suffix.
+       The app downloads real daily history, trains models on it, tests them on data they never saw, and shows the forecast with its uncertainty.</p>
+  </section>
+
+  <div id="results" hidden>
+    <section class="card hero" id="hero"></section>
+    <section class="grid2" id="kpis"></section>
+    <section class="card" id="priceCard">
+      <div class="card-h"><h2>Price history &amp; forecast</h2>
+        <div class="controls">
+          <div class="seg" id="ranges"></div>
+          <label>Forecast model <select id="modelSel"></select></label>
+        </div>
+      </div>
+      <p class="sub">Solid lines are <b>actual</b> historical prices. The dashed line and shaded band right of the divider are the model's <b>predicted</b> future prices and its <span id="rangeLabel"></span>.</p>
+      <div id="priceChart"></div>
+      <div id="volChart"></div>
+    </section>
+    <section class="grid2">
+      <div class="card"><div class="card-h"><h2>RSI (14)</h2></div><div id="rsiChart"></div></div>
+      <div class="card"><div class="card-h"><h2>MACD (12, 26, 9)</h2></div><div id="macdChart"></div></div>
+    </section>
+    <section class="card" id="compareCard">
+      <div class="card-h"><h2>ML vs deep-learning forecast comparison</h2></div>
+      <p class="sub">Month-ahead (21 sessions) predicted closing price from every trained model. Hover for values.</p>
+      <div id="cmpChart"></div>
+      <div class="tablewrap" id="cmpTable"></div>
+    </section>
+    <section class="card" id="evalCard">
+      <div class="card-h"><h2>Model evaluation</h2></div>
+      <div id="verdict"></div>
+      <div class="tabs" id="evalTabs"></div>
+      <div class="tablewrap" id="evalTable"></div>
+      <div id="evalNotes" class="notes"></div>
+    </section>
+    <section class="card" id="btCard">
+      <div class="card-h"><h2>Backtest on unseen data</h2></div>
+      <div id="btMeta" class="sub"></div>
+      <div class="grid2"><div><h3>Next-day predicted vs actual close</h3><div id="btPrice"></div></div>
+        <div><h3>Long/flat strategy vs buy &amp; hold (growth of 1)</h3><div id="btEquity"></div></div></div>
+      <div class="tablewrap" id="btTable"></div>
+    </section>
+    <section class="card" id="trendCard">
+      <div class="card-h"><h2>Market trend &amp; statistics</h2></div>
+      <div class="grid2"><div class="tablewrap" id="signals"></div><div class="tablewrap" id="stats"></div></div>
+    </section>
+    <p class="disclaimer" id="disclaimer"></p>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='charts.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

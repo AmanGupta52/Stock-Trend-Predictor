@@ -1,0 +1,35 @@
+app:
+  name: "Stock Trend Predictor"
+  version: "2.0.1"
+  host: "127.0.0.1"
+  port: 5000
+
+data:
+  provider: "Yahoo Finance (yfinance)"
+  default_ticker: "RELIANCE.NS"
+  default_period: "5y"            # 2y | 5y | 10y | max
+  cache_dir: ".cache"
+  data_cache_ttl_minutes: 60      # re-download if cached data is older than this
+  min_rows: 300                   # minimum clean daily bars required
+  stale_after_days: 10            # warn if last bar is older than this
+
+modeling:
+  horizon: 21                     # trading sessions ahead (~1 month)
+  eval_horizons: [1, 5, 10, 21]
+  seq_len: 20                     # LSTM look-back window (sessions)
+  split: {train: 0.70, val: 0.15} # remainder = test (chronological)
+  interval_quantiles: [0.10, 0.90]  # 80% empirical interval
+  random_state: 42
+  models: [ridge, random_forest, gradient_boosting, xgboost, lstm]
+  lstm:
+    hidden: 32
+    epochs: 60
+    patience: 8
+    batch_size: 32
+    lr: 0.003
+    weight_decay: 0.0001
+    n_seeds: 3
+    backend: "auto"               # auto | torch | numpy
+
+backtest:
+  transaction_cost: 0.001         # 0.1% per position change

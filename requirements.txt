@@ -1,0 +1,13 @@
+# Core
+yfinance>=0.2.54
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+flask>=3.0.0
+pyyaml>=6.0
+requests>=2.31.0
+# Optional but recommended
+torch>=2.2.0        # faster LSTM backend; without it a built-in NumPy LSTM is used automatically
+holidays>=0.58      # exchange holiday calendars for forecast dates (NSE / NYSE)
+pytest>=7.0.0

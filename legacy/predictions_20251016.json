@@ -1,0 +1,72 @@
+[
+  {
+    "date": "2025-10-16T15:14:29.096679",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:14:57.918431",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:17:20.292930",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:17:33.868308",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:18:40.219878",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:25:17.195048",
+    "ticker": "RELIANCE.NS",
+    "action": "BUY",
+    "confidence": 0.53,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:25:40.087619",
+    "ticker": "HDFCBANK.NS",
+    "action": "SELL",
+    "confidence": 0.68,
+    "accuracy": 0.425531914893617
+  },
+  {
+    "date": "2025-10-16T15:28:23.272668",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:28:33.957329",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  },
+  {
+    "date": "2025-10-16T15:28:35.761066",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.83,
+    "accuracy": 0.5319148936170213
+  }
+]

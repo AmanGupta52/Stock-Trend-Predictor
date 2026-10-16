@@ -1,0 +1,42 @@
+[
+  {
+    "date": "2025-10-16T15:53:55.841046",
+    "ticker": "BLS.NS",
+    "action": "SELL",
+    "confidence": 0.86,
+    "accuracy": 0.42,
+    "outcome": "Pending"
+  },
+  {
+    "date": "2025-10-16T15:53:58.739736",
+    "ticker": "BLS.NS",
+    "action": "SELL",
+    "confidence": 0.86,
+    "accuracy": 0.42,
+    "outcome": "Pending"
+  },
+  {
+    "date": "2025-10-16T15:54:11.636766",
+    "ticker": "BLS.NS",
+    "action": "SELL",
+    "confidence": 0.86,
+    "accuracy": 0.42,
+    "outcome": "Pending"
+  },
+  {
+    "date": "2025-10-16T15:56:02.447756",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.84,
+    "accuracy": 0.44,
+    "outcome": "Pending"
+  },
+  {
+    "date": "2025-10-16T15:56:08.198901",
+    "ticker": "RELIANCE.NS",
+    "action": "SELL",
+    "confidence": 0.84,
+    "accuracy": 0.44,
+    "outcome": "Pending"
+  }
+]
