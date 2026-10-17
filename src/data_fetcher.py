@@ -159,39 +159,76 @@ class StockDataFetcher:
         except Exception as exc:  # cache problems must never break an analysis
             log.warning("Could not write cache: %s", exc)
 
-    def fetch_symbol(self, symbol: str, period: str = "5y", force: bool = False) -> StockData:
+    def _get_raw(self, symbol: str, period: str, force: bool):
+        """Cache-aware download. Returns (df, meta, fetched_at, from_cache, stale)."""
+        cached = self._load_cache(symbol, period)
+        if cached and not force:
+            fetched = pd.Timestamp(cached[1].get("fetched_at"))
+            if pd.Timestamp.now(tz="UTC") - fetched < self.ttl:
+                df, info = cached
+                return df, info.get("meta", {}), info["fetched_at"], True, False
+        try:
+            df, meta = self._download(symbol, period)
+            fetched_at = pd.Timestamp.now(tz="UTC").isoformat()
+            self._save_cache(symbol, period, df, meta)
+            return df, meta, fetched_at, False, False
+        except DataError as err:
+            if err.code in ("provider_unavailable", "rate_limited") and cached:
+                df, info = cached
+                return df, info.get("meta", {}), info["fetched_at"], True, True
+            raise
+
+    def fetch_symbol(self, symbol: str, period: str = "5y", force: bool = False,
+                     min_rows: Optional[int] = None) -> StockData:
         """Download (or load from cache) one exact symbol. Raises DataError."""
         if period not in VALID_PERIODS:
             raise DataError(f"Unsupported period '{period}'. Choose one of {', '.join(VALID_PERIODS)}.", "bad_period")
         symbol = symbol.strip().upper()
         if not SYMBOL_RE.match(symbol):
             raise DataError(f"'{symbol}' is not a valid ticker symbol.", "invalid_symbol")
+        df, meta, fetched_at, from_cache, stale = self._get_raw(symbol, period, force)
+        return self._finish(symbol, df, meta, fetched_at, from_cache, stale, min_rows)
 
-        cached = self._load_cache(symbol, period)
-        from_cache = stale = False
-        if cached and not force:
-            fetched = pd.Timestamp(cached[1].get("fetched_at"))
-            if pd.Timestamp.now(tz="UTC") - fetched < self.ttl:
-                df, info = cached
-                meta, fetched_at, from_cache = info.get("meta", {}), cached[1]["fetched_at"], True
-                return self._finish(symbol, df, meta, fetched_at, from_cache, stale)
+    def fetch_series(self, symbol: str, period: str = "5y", force: bool = False) -> Optional[pd.Series]:
+        """Close-price series for a market-context symbol (index, FX, commodity). None if unavailable."""
         try:
-            df, meta = self._download(symbol, period)
-            fetched_at = pd.Timestamp.now(tz="UTC").isoformat()
-            self._save_cache(symbol, period, df, meta)
+            df, _, _, _, _ = self._get_raw(symbol, period, force)
         except DataError as err:
-            if err.code in ("provider_unavailable", "rate_limited") and cached:
-                df, info = cached
-                meta, fetched_at, from_cache, stale = info.get("meta", {}), info["fetched_at"], True, True
-            else:
-                raise
-        return self._finish(symbol, df, meta, fetched_at, from_cache, stale)
+            log.info("context series %s unavailable: %s", symbol, err.message)
+            return None
+        s = df["Close"].replace([np.inf, -np.inf], np.nan).dropna()
+        return s if len(s) > 60 else None
 
-    def _finish(self, symbol, df, meta, fetched_at, from_cache, stale) -> StockData:
-        df, warns = clean_prices(df, self.min_rows, self.stale_after_days)
+    def get_sector(self, symbol: str) -> Optional[Dict[str, str]]:
+        """Sector/industry of a stock (cached on disk). None if the provider does not say."""
+        path = self.cache_dir / "sectors.json"
+        try:
+            store = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            store = {}
+        if symbol in store:
+            return store[symbol] or None
+        if yf is None:
+            return None
+        try:
+            info = yf.Ticker(symbol).get_info() or {}
+            val = {"sector": info.get("sector") or "", "industry": info.get("industry") or ""}
+        except Exception as exc:
+            log.info("sector lookup failed for %s: %s", symbol, exc)
+            return None
+        store[symbol] = val if (val["sector"] or val["industry"]) else {}
+        try:
+            path.write_text(json.dumps(store))
+        except Exception:
+            pass
+        return store[symbol] or None
+
+    def _finish(self, symbol, df, meta, fetched_at, from_cache, stale, min_rows=None) -> StockData:
+        need = min_rows or self.min_rows
+        df, warns = clean_prices(df, need, self.stale_after_days)
         df, partial = split_incomplete_session(df, meta)
-        if len(df) < self.min_rows:
-            raise DataError(f"Only {len(df)} completed sessions available (need {self.min_rows}).",
+        if len(df) < need:
+            raise DataError(f"Only {len(df)} completed sessions available (need {need}).",
                             "insufficient_history")
         if stale:
             warns.insert(0, "Yahoo Finance could not be reached - showing previously cached data "
@@ -203,7 +240,7 @@ class StockDataFetcher:
                          stale_cache=stale, partial_bar=partial, warnings=warns)
 
     # ---- resolve + load ---------------------------------------------------------
-    def load(self, query: str, period: str = "5y", force: bool = False) -> StockData:
+    def load(self, query: str, period: str = "5y", force: bool = False, min_rows: Optional[int] = None) -> StockData:
         """Resolve a company name / symbol to a ticker and load its history."""
         q = validate_symbol(query)
         looks_like_symbol = bool(SYMBOL_RE.match(q))
@@ -218,7 +255,7 @@ class StockDataFetcher:
             for cand in candidates:
                 tried.append(cand)
                 try:
-                    data = self.fetch_symbol(cand, period, force)
+                    data = self.fetch_symbol(cand, period, force, min_rows)
                 except DataError as err:
                     last_error = err
                     if err.code in ("provider_unavailable", "rate_limited", "missing_dependency",
@@ -242,7 +279,7 @@ class StockDataFetcher:
             if res["symbol"] in tried:
                 continue
             try:
-                data = self.fetch_symbol(res["symbol"], period, force)
+                data = self.fetch_symbol(res["symbol"], period, force, min_rows)
             except DataError as err:
                 last_error = err
                 if err.code in ("provider_unavailable", "rate_limited", "missing_dependency"):

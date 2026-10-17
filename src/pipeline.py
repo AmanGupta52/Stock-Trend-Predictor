@@ -15,6 +15,10 @@ from . import __version__
 from .data_fetcher import StockData, StockDataFetcher
 from .data_processor import DataError
 from .evaluator import evaluate, relative_mae
+from .market_context import load_context
+from .store import Store
+from .tracker import forecast_rows, resolve_pending
+from .volatility import run_volatility
 from .feature_engineer import make_feature_set
 from .model_trainer import FAMILY, LABEL, make_splits, train_all
 from .predictor import build_forecasts, future_sessions
@@ -68,11 +72,18 @@ class Analyzer:
                                         d.get("stale_after_days", 10))
         self.result_dir = cache / "results"
         self.result_dir.mkdir(parents=True, exist_ok=True)
+        self.store = Store(cache / "app.db")
 
     # ---- result cache -----------------------------------------------------------
-    def _key(self, data: StockData, period: str) -> str:
+    def _options(self, options: Optional[dict]) -> dict:
+        o = options or {}
+        return {"use_context": bool(o.get("use_context", self.m.get("use_market_context", True))),
+                "tune": bool(o.get("tune", self.m.get("tune", False)))}
+
+    def _key(self, data: StockData, period: str, opts: dict) -> str:
         blob = json.dumps([__version__, data.symbol, period, str(data.df.index[-1].date()), len(data.df),
-                           round(float(data.df["Close"].iloc[-1]), 4), self.m, self.cfg["backtest"]], sort_keys=True)
+                           round(float(data.df["Close"].iloc[-1]), 4), self.m, self.cfg["backtest"], opts,
+                           self.cfg.get("market_context")], sort_keys=True, default=str)
         return hashlib.sha1(blob.encode()).hexdigest()
 
     def _result_path(self, symbol, period):
@@ -80,14 +91,21 @@ class Analyzer:
 
     # ---- main entry -------------------------------------------------------------
     def analyze(self, query: str, period: str = "5y", force_refresh: bool = False, force_retrain: bool = False,
-                progress: Optional[Callable[[float, str], None]] = None, data: Optional[StockData] = None) -> dict:
+                progress: Optional[Callable[[float, str], None]] = None, data: Optional[StockData] = None,
+                options: Optional[dict] = None) -> dict:
         progress = progress or (lambda p, m: None)
         t0 = time.time()
+        opts = self._options(options)
         progress(0.02, "Resolving symbol and downloading price history from Yahoo Finance")
         data = data or self.fetcher.load(query, period, force=force_refresh)
         progress(0.10, f"Loaded {len(data.df)} daily sessions for {data.symbol}")
+        now_iso = pd.Timestamp.now(tz="UTC").isoformat()
+        try:   # any forecast whose target date has now passed gets its real outcome recorded
+            resolve_pending(self.store, data.symbol, data.df, now_iso)
+        except Exception as exc:
+            log.warning("could not resolve tracked forecasts: %s", exc)
 
-        key = self._key(data, period)
+        key = self._key(data, period, opts)
         rp = self._result_path(data.symbol, period)
         if rp.exists() and not force_retrain:
             try:
@@ -96,7 +114,6 @@ class Analyzer:
                     cached["run"] = {**cached.get("run", {}), "models_from_cache": True,
                                      "note": "Data unchanged since the last training run; reusing trained results. "
                                              "Use 'Force retrain' to train again."}
-                    # data-level fields reflect this request
                     cached["data"].update(self._data_block(data))
                     cached["warnings"] = self._warnings(data, cached.get("model_warnings", []))
                     progress(1.0, "Done (cached models)")
@@ -104,16 +121,55 @@ class Analyzer:
             except Exception as exc:
                 log.warning("ignoring bad result cache: %s", exc)
 
-        result = self._compute(data, period, progress)
+        result = self._compute(data, period, progress, opts, force_refresh)
         result["cache_key"] = key
         result["run"]["seconds"] = round(time.time() - t0, 1)
         result["run"]["models_from_cache"] = False
         try:
-            rp.write_text(json.dumps(clean(result)))
+            self.store.log_forecasts(forecast_rows(result, now_iso))
+        except Exception as exc:
+            log.warning("could not log forecasts: %s", exc)
+        out = clean(result)
+        try:
+            rp.write_text(json.dumps(out))
         except Exception as exc:
             log.warning("could not write result cache: %s", exc)
         progress(1.0, "Done")
-        return clean(result)
+        return out
+
+    # ---- watchlist helpers ------------------------------------------------------
+    def cached_summary(self, symbol: str) -> Optional[dict]:
+        """Forecast summary from the most recent saved analysis of ``symbol`` (None if never analysed)."""
+        files = sorted(self.result_dir.glob(f"{symbol.replace('/', '_')}__*.json"), key=lambda p: p.stat().st_mtime)
+        if not files:
+            return None
+        try:
+            r = json.loads(files[-1].read_text())
+            f = r["forecast"]
+            sel = f["models"][f["selected"]]
+            return {"model": sel["label"], "next_day": sel["next_day"], "month_end": sel["month_end"],
+                    "as_of": f["as_of"], "reliability": f["reliability"], "period": r.get("period"),
+                    "analysed_at": pd.Timestamp(files[-1].stat().st_mtime, unit="s", tz="UTC").isoformat()}
+        except Exception as exc:
+            log.warning("bad cached result for %s: %s", symbol, exc)
+            return None
+
+    def quote_summary(self, symbol: str, force: bool = False) -> dict:
+        """Latest price / change for a watchlist row (light: no model training)."""
+        d = self.fetcher.fetch_symbol(symbol, "1y", force=force, min_rows=30)
+        df = d.df
+        last, prev = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
+        price, change, label, qtime = last, (last / prev - 1) * 100, "vs prior close", None
+        if d.partial_bar:
+            q = self._data_block(d)["latest_quote"]
+            if q:
+                price, qtime = q["price"], q["time"]
+                change, label = (price / last - 1) * 100, "vs last completed close"
+        return {"last_close": last, "last_close_date": str(df.index[-1].date()), "price": price,
+                "change_pct": change, "change_label": label, "quote_time": qtime,
+                "stale": d.stale_cache, "fetched_at": d.fetched_at,
+                "currency": d.meta.get("currency") or "", "name": d.meta.get("longName") or d.meta.get("shortName") or symbol,
+                "exchange": d.meta.get("fullExchangeName") or d.meta.get("exchangeName") or ""}
 
     # ---- blocks -----------------------------------------------------------------
     def _warnings(self, data: StockData, model_warnings):
@@ -151,26 +207,40 @@ class Analyzer:
             "interpreted_from": data.interpreted_from, "alternatives": data.alternatives,
         }
 
-    def _compute(self, data: StockData, period: str, progress) -> dict:
+    def _compute(self, data: StockData, period: str, progress, opts: dict, force_refresh: bool = False) -> dict:
         df, meta, m = data.df, data.meta, self.m
         H, L = m["horizon"], m["seq_len"]
-        progress(0.12, "Computing indicators and leak-free features")
+        progress(0.11, "Computing indicators and leak-free features")
         ohlcv = df[["Open", "High", "Low", "Close", "Volume"]]
         ind = compute_indicators(ohlcv)
         analysis = trend_summary(df, ind)
-        fs = make_feature_set(df, H, L)
+        ctx_df, ctx_used, ctx_warn = None, [], []
+        if opts["use_context"]:
+            progress(0.12, "Downloading market and sector inputs (indices, VIX, FX, commodities)")
+            try:
+                ctx_df, ctx_used, ctx_warn = load_context(self.fetcher, self.cfg.get("market_context", {}),
+                                                          data.symbol, df.index, period, force_refresh)
+            except Exception as exc:
+                log.warning("market context failed: %s", exc)
+                ctx_warn = [f"Market inputs were unavailable ({type(exc).__name__}); models use the stock's own history only."]
+        fs = make_feature_set(df, H, L, ctx_df)
         plan = make_splits(fs.n_labeled, L, H, m["split"]["train"], m["split"]["val"])
 
-        tr = train_all(fs.X.values, fs.Y.values, fs.feature_names, plan, m, progress)
-        progress(0.88, "Evaluating on held-out data and building forecasts")
+        tr = train_all(fs.X.values, fs.Y.values, fs.feature_names, plan, m, progress, tune=opts["tune"])
+        progress(0.87, "Evaluating on held-out data and building forecasts")
         ev = evaluate(tr, fs, {**m, **self.cfg["backtest"]})
+        try:
+            vol = run_volatility(fs.X, fs.close, plan, m, float(df["Close"].iloc[-1]), progress)
+        except Exception as exc:
+            log.exception("volatility forecast failed")
+            vol = {"error": f"Volatility forecast failed: {type(exc).__name__}: {exc}"}
 
         last_close = float(df["Close"].iloc[-1])
         fdates, hol_ok = future_sessions(df.index[-1], H, data.symbol, meta)
         include = [n for n in tr.models if FAMILY[n] != "Baseline"]
         fc = build_forecasts(tr.pred_final, ev["intervals"], last_close, fdates, include)
 
-        mw = list(tr.notes)
+        mw = list(tr.notes) + list(ctx_warn)
         if not hol_ok:
             mw.append("Exchange holidays could not be modelled (install the 'holidays' package); forecast dates "
                       "assume Monday-Friday sessions and may shift around market holidays.")
@@ -221,7 +291,7 @@ class Analyzer:
             "analysis": analysis,
             "forecast": {
                 "as_of": str(df.index[-1].date()), "base_close": last_close, "horizon": H, "models": fc,
-                "selected": ev["selected"], "best_ml": ev["best_ml"], "best_dl": ev["best_dl"],
+                "selected": ev["selected"], "best_ml": ev["best_ml"], "best_dl": ev["best_dl"], "ensemble": ev["ensemble"],
                 "reliability": ev["reliability"], "reliability_note": ev["reliability_note"],
                 "interval_label": f"{int((m['interval_quantiles'][1] - m['interval_quantiles'][0]) * 100)}% empirical range",
                 "holidays_modelled": hol_ok,
@@ -240,11 +310,18 @@ class Analyzer:
                                    "fitting or selection."),
                 "beats_naive_val": ev["beats_naive_val"], "beats_naive_test": ev["beats_naive_test"],
                 "feature_importance": tr.feature_importance,
-                "lstm": {"backend": tr.lstm_backend, "epochs": tr.lstm_epochs},
+                "deep": {n: {"backend": tr.backends.get(n), "epochs": tr.epochs.get(n)} for n in tr.backends if n in tr.models},
+                "tuning": [{"model": n, "label": LABEL[n], **{k: v for k, v in t.items()}} for n, t in tr.tuning.items()],
+                "ensemble_weights": {LABEL[k]: v for k, v in tr.ensemble_weights.items()},
             },
             "backtest": ev["backtest"],
+            "volatility": vol,
+            "market_inputs": {"enabled": opts["use_context"], "used": ctx_used,
+                              "note": ("Lagged one session where the asset closes after the stock; same-day otherwise "
+                                       "(no look-ahead)." if ctx_used else "Not used.")},
+            "options": opts,
             "model_warnings": mw,
             "warnings": self._warnings(data, mw),
             "disclaimer": DISCLAIMER,
-            "run": {"features": len(fs.feature_names), "samples": int(len(plan.all)), "version": __version__},
+            "run": {"features": len(fs.feature_names), "tuned": opts["tune"], "samples": int(len(plan.all)), "version": __version__},
         }

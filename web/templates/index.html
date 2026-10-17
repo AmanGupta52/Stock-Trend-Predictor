@@ -8,7 +8,13 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand"><span class="logo" aria-hidden="true">◢</span><div><h1>Stock Trend Predictor</h1><p>Yahoo Finance data · ML &amp; LSTM forecasts</p></div></div>
+  <div class="brand"><span class="logo" aria-hidden="true">◢</span><div><h1>Stock Trend Predictor</h1><p>Yahoo Finance data · ML &amp; deep-learning forecasts</p></div></div>
+  <nav class="nav" id="nav" aria-label="Sections">
+    <button type="button" data-view="dashboard" class="on">Dashboard</button>
+    <button type="button" data-view="watchlist">★ Watchlist</button>
+    <button type="button" data-view="compare">Compare</button>
+    <button type="button" data-view="tracking">Forecast tracking</button>
+  </nav>
   <form id="searchForm" class="search" autocomplete="off">
     <div class="field">
       <input id="q" name="q" type="search" placeholder="Company or symbol — RELIANCE.NS, TCS.NS, AAPL, MSFT" value="{{ default_ticker }}" aria-label="Company name or stock symbol" maxlength="60" required>
@@ -19,11 +25,16 @@
     </select>
     <button id="go" class="primary" type="submit">Analyze</button>
     <button id="refresh" type="button" class="ghost" title="Re-download data from Yahoo Finance" disabled>↻ Refresh data</button>
-    <label class="check" title="Retrain even if data is unchanged"><input type="checkbox" id="retrain"> Force retrain</label>
+    <div class="opts">
+      <label class="check" title="Retrain even if data is unchanged"><input type="checkbox" id="retrain"> Force retrain</label>
+      <label class="check" title="Add Nifty/Sensex, VIX, USD/INR, crude oil and sector index (or S&amp;P 500, VIX, ... for US stocks) as model inputs"><input type="checkbox" id="useContext" checked> Market inputs</label>
+      <label class="check" title="Search better hyper-parameters per model with time-aware cross-validation (slower)"><input type="checkbox" id="tune"> Tune models (slower)</label>
+    </div>
   </form>
 </header>
 
 <main id="main">
+ <div id="view-dashboard">
   <div id="status" class="status" hidden aria-live="polite">
     <div class="bar"><i id="barfill"></i></div><span id="statusMsg"></span>
   </div>
@@ -60,6 +71,10 @@
       <div id="cmpChart"></div>
       <div class="tablewrap" id="cmpTable"></div>
     </section>
+    <section class="card" id="volCard">
+      <div class="card-h"><h2>Volatility forecast — how much it may swing</h2></div>
+      <div id="volBody"></div>
+    </section>
     <section class="card" id="evalCard">
       <div class="card-h"><h2>Model evaluation</h2></div>
       <div id="verdict"></div>
@@ -80,8 +95,62 @@
     </section>
     <p class="disclaimer" id="disclaimer"></p>
   </div>
+ </div>
+
+ <div id="view-watchlist" hidden>
+  <section class="card">
+    <div class="card-h"><h2>★ Watchlist</h2>
+      <form id="wlForm" class="inline">
+        <input id="wlInput" type="search" placeholder="Add a stock — name or symbol" maxlength="60" aria-label="Add stock to watchlist">
+        <button class="primary" type="submit">Add</button>
+        <button id="wlRefresh" type="button">↻ Refresh prices</button>
+      </form>
+    </div>
+    <div id="wlMsg" class="alert error" hidden></div>
+    <p class="sub">Prices are delayed / latest-available from Yahoo Finance (not real-time). Forecasts come from your most recent analysis of each stock — use “Update forecast” to retrain.</p>
+    <div class="tablewrap" id="wlTable"></div>
+  </section>
+ </div>
+
+ <div id="view-compare" hidden>
+  <section class="card">
+    <div class="card-h"><h2>Compare stocks</h2></div>
+    <form id="cmpForm" class="inline wrap">
+      <input class="cin" placeholder="Stock 1 (e.g. RELIANCE.NS)" maxlength="60" aria-label="Stock 1">
+      <input class="cin" placeholder="Stock 2 (e.g. TCS.NS)" maxlength="60" aria-label="Stock 2">
+      <input class="cin" placeholder="Stock 3 (optional)" maxlength="60" aria-label="Stock 3">
+      <input class="cin" placeholder="Stock 4 (optional)" maxlength="60" aria-label="Stock 4">
+      <select id="cmpPeriod" aria-label="Period"><option value="1y">1 year</option><option value="2y">2 years</option><option value="5y" selected>5 years</option><option value="10y">10 years</option><option value="max">Max</option></select>
+      <button class="primary" type="submit" id="cmpGo">Compare</button>
+    </form>
+    <div id="cmpMsg" class="alert error" hidden></div>
+    <div id="cmpOut" hidden>
+      <p class="sub" id="cmpSummary"></p>
+      <h3>Price rebased to 100</h3><div id="cmpRebased"></div>
+      <h3>Drawdown from peak (%)</h3><div id="cmpDD"></div>
+      <div class="tablewrap" id="cmpStats"></div>
+      <h3>Correlation of daily returns</h3><div class="tablewrap" id="cmpCorr"></div>
+      <div class="notes" id="cmpNotes"></div>
+    </div>
+  </section>
+ </div>
+
+ <div id="view-tracking" hidden>
+  <section class="card">
+    <div class="card-h"><h2>Forecast tracking — real-world accuracy</h2>
+      <div class="controls"><select id="trkSym" aria-label="Stock"></select><button id="trkResolve" type="button">↻ Update outcomes</button></div>
+    </div>
+    <p class="sub" id="trkNote"></p>
+    <div id="trkMsg" class="alert warn" hidden></div>
+    <div id="trkKpi" class="trk-kpi"></div>
+    <div class="tablewrap" id="trkTable"></div>
+    <h3>Recent forecasts</h3>
+    <div class="tablewrap" id="trkRecent"></div>
+  </section>
+ </div>
 </main>
 <script src="{{ url_for('static', filename='charts.js') }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='extras.js') }}"></script>
 </body>
 </html>

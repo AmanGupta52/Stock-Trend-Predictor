@@ -11,8 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, render_template, request
 
+import pandas as pd
+
+from src.compare import compare_stocks
 from src.data_fetcher import VALID_PERIODS, DataError
-from src.pipeline import Analyzer, load_config
+from src.pipeline import Analyzer, clean, load_config
+from src.tracker import resolve_pending, summarize
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
@@ -31,12 +35,13 @@ def _prune():
             del jobs[k]
 
 
-def _run(job_id, query, period, refresh, retrain):
+def _run(job_id, query, period, refresh, retrain, options):
     def progress(p, msg):
         with jobs_lock:
             jobs[job_id].update(progress=round(float(p), 3), message=msg)
     try:
-        result = analyzer.analyze(query, period, force_refresh=refresh, force_retrain=retrain, progress=progress)
+        result = analyzer.analyze(query, period, force_refresh=refresh, force_retrain=retrain, progress=progress,
+                                  options=options)
         with jobs_lock:
             jobs[job_id].update(status="done", progress=1.0, result=result, message="Done")
     except DataError as err:
@@ -87,7 +92,8 @@ def analyze():
     job_id = uuid.uuid4().hex
     with jobs_lock:
         jobs[job_id] = {"status": "running", "progress": 0.0, "message": "Queued", "created": time.time()}
-    executor.submit(_run, job_id, query, period, bool(body.get("refresh")), bool(body.get("retrain")))
+    options = {k: bool(body[k]) for k in ("use_context", "tune") if k in body}
+    executor.submit(_run, job_id, query, period, bool(body.get("refresh")), bool(body.get("retrain")), options)
     return jsonify(job_id=job_id)
 
 
@@ -98,6 +104,97 @@ def job(job_id):
         if not j:
             return jsonify(error={"code": "unknown_job", "message": "Job not found or expired."}), 404
         return jsonify({k: v for k, v in j.items() if k != "created"})
+
+
+def _err(err: DataError, status=400):
+    return jsonify(error={"code": err.code, "message": err.message}), status
+
+
+# ------------------------------------------------------------------ watchlist
+def _wl_row(item, refresh=False):
+    row = dict(item)
+    try:
+        row["quote"] = analyzer.quote_summary(item["symbol"], force=refresh)
+    except DataError as err:
+        row["quote"], row["error"] = None, err.message
+    except Exception:
+        log.exception("watchlist quote failed for %s", item["symbol"])
+        row["quote"], row["error"] = None, "Could not load the latest price."
+    row["forecast"] = analyzer.cached_summary(item["symbol"])
+    return row
+
+
+@app.get("/api/watchlist")
+def watchlist():
+    refresh = request.args.get("refresh") == "1"
+    items = analyzer.store.wl_list()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = list(pool.map(lambda i: _wl_row(i, refresh), items))
+    return jsonify(items=clean(rows), disclaimer="Delayed / latest-available data from Yahoo Finance; not real-time. "
+                   "Forecasts are estimates, not guarantees.")
+
+
+@app.post("/api/watchlist")
+def watchlist_add():
+    query = str((request.get_json(silent=True) or {}).get("query", "")).strip()
+    if not query or len(query) > 60:
+        return jsonify(error={"code": "empty_query", "message": "Enter a company name or stock symbol."}), 400
+    try:
+        d = analyzer.fetcher.load(query, "1y", min_rows=30)
+    except DataError as err:
+        return _err(err)
+    analyzer.store.wl_add(d.symbol, d.meta.get("longName") or d.meta.get("shortName") or d.symbol,
+                          d.meta.get("fullExchangeName") or d.meta.get("exchangeName") or "",
+                          d.meta.get("currency") or "", pd.Timestamp.now(tz="UTC").isoformat())
+    item = next(i for i in analyzer.store.wl_list() if i["symbol"] == d.symbol)
+    return jsonify(item=clean(_wl_row(item)))
+
+
+@app.delete("/api/watchlist/<path:symbol>")
+def watchlist_remove(symbol):
+    return jsonify(removed=analyzer.store.wl_remove(symbol.upper()))
+
+
+# ------------------------------------------------------------------ compare
+@app.post("/api/compare")
+def compare():
+    body = request.get_json(silent=True) or {}
+    symbols, period = body.get("symbols") or [], str(body.get("period") or "5y")
+    if not isinstance(symbols, list) or any(not isinstance(x, str) or len(x) > 60 for x in symbols):
+        return jsonify(error={"code": "bad_request", "message": "Provide 2 to 4 stock names or symbols."}), 400
+    if period not in VALID_PERIODS:
+        return jsonify(error={"code": "bad_period", "message": f"Period must be one of {', '.join(VALID_PERIODS)}."}), 400
+    try:
+        return jsonify(clean(compare_stocks(analyzer.fetcher, symbols, period, bool(body.get("refresh")))))
+    except DataError as err:
+        return _err(err)
+    except Exception:
+        log.exception("compare failed")
+        return jsonify(error={"code": "internal_error", "message": "Comparison failed; see the server log."}), 500
+
+
+# ------------------------------------------------------------------ forecast tracking
+@app.get("/api/tracking")
+def tracking():
+    symbol = (request.args.get("symbol") or "").upper() or None
+    return jsonify(clean(summarize(analyzer.store, symbol)))
+
+
+@app.post("/api/tracking/resolve")
+def tracking_resolve():
+    """Download latest data for every symbol with open forecasts and record outcomes that are now known."""
+    symbol = str((request.get_json(silent=True) or {}).get("symbol") or "").upper() or None
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    resolved, problems = 0, []
+    for sym in ([symbol] if symbol else analyzer.store.tracked_symbols()):
+        if not analyzer.store.pending(sym):
+            continue
+        try:
+            d = analyzer.fetcher.fetch_symbol(sym, "1y", force=True, min_rows=30)
+            resolved += resolve_pending(analyzer.store, sym, d.df, now)
+        except DataError as err:
+            problems.append(f"{sym}: {err.message}")
+    return jsonify(resolved=resolved, problems=problems, summary=clean(summarize(analyzer.store, symbol)))
 
 
 if __name__ == "__main__":

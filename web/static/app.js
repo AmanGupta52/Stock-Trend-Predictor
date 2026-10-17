@@ -2,10 +2,11 @@
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const CUR = { INR: "₹", USD: "$", EUR: "€", GBP: "£", JPY: "¥", CAD: "C$", AUD: "A$", HKD: "HK$" };
-  const COLORS = ["var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
+  const COLORS = ["var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)", "var(--c7)", "var(--c8)", "var(--c1)"];
   let R = null, charts = {}, pollTimer = null, evalSplit = "test", evalH = "1", curSym = "";
 
-  const money = v => v == null ? "–" : (CUR[R?.meta.currency] ?? (R?.meta.currency ? R.meta.currency + " " : "")) + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const moneyC = (v, c) => v == null ? "–" : (CUR[c] ?? (c ? c + " " : "")) + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = v => moneyC(v, R?.meta.currency);
   const pct = (v, d = 2) => v == null ? "–" : (v > 0 ? "+" : "") + v.toFixed(d) + "%";
   const num = (v, d = 2) => v == null ? "–" : v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
   const cls = v => v > 0.05 ? "up" : v < -0.05 ? "down" : "flat";
@@ -46,30 +47,34 @@
   function showError(msg) { const e = $("error"); e.hidden = !msg; e.textContent = msg || ""; }
   function setStatus(p, m) { $("status").hidden = p == null; if (p != null) { $("barfill").style.width = Math.round(p * 100) + "%"; $("statusMsg").textContent = `${Math.round(p * 100)}% — ${m}`; } }
 
+  function jobRun(body, onProgress) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error?.message || "Request failed");
+        let fails = 0;
+        const t = setInterval(async () => {
+          try {
+            const s = await (await fetch("/api/jobs/" + j.job_id)).json(); fails = 0;
+            if (s.error) { clearInterval(t); reject(new Error(s.error.message)); return; }
+            if (onProgress) onProgress(s.progress, s.message);
+            if (s.status === "done") { clearInterval(t); resolve(s.result); }
+            else if (s.status === "error") { clearInterval(t); reject(new Error(s.error.message)); }
+          } catch { if (++fails > 5) { clearInterval(t); reject(new Error("Lost connection to the local server.")); } }
+        }, 700);
+      } catch (e) { reject(new Error(e.message === "Failed to fetch" ? "Cannot reach the local server. Is app.py still running?" : e.message)); }
+    });
+  }
+  const analyzeBody = (query, refresh) => ({ query, period: $("period").value, refresh, retrain: $("retrain").checked, use_context: $("useContext").checked, tune: $("tune").checked });
+
   async function run(refresh) {
     const query = q.value.trim();
     if (!query) { showError("Enter a company name or stock symbol."); return; }
-    clearInterval(pollTimer); showError(""); setBusy(true); setStatus(0.01, "Starting…");
-    $("warnings").hidden = true;
-    try {
-      const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, period: $("period").value, refresh, retrain: $("retrain").checked }) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error?.message || "Request failed");
-      poll(j.job_id);
-    } catch (e) { setBusy(false); setStatus(null); showError(e.message === "Failed to fetch" ? "Cannot reach the local server. Is app.py still running?" : e.message); }
-  }
-  function poll(id) {
-    let fails = 0;
-    pollTimer = setInterval(async () => {
-      try {
-        const j = await (await fetch("/api/jobs/" + id)).json(); fails = 0;
-        if (j.error) { clearInterval(pollTimer); setBusy(false); setStatus(null); showError(j.error.message); return; }
-        setStatus(j.progress, j.message);
-        if (j.status === "done") { clearInterval(pollTimer); setBusy(false); setStatus(null); render(j.result); }
-        if (j.status === "error") { clearInterval(pollTimer); setBusy(false); setStatus(null); showError(j.error.message); }
-      } catch { if (++fails > 5) { clearInterval(pollTimer); setBusy(false); setStatus(null); showError("Lost connection to the local server."); } }
-    }, 700);
+    ST.show("dashboard"); showError(""); setBusy(true); setStatus(0.01, "Starting…"); $("warnings").hidden = true;
+    try { render(await jobRun(analyzeBody(query, refresh), setStatus)); }
+    catch (e) { showError(e.message); }
+    finally { setBusy(false); setStatus(null); }
   }
 
   // ---------------- render
@@ -80,7 +85,7 @@
     const all = [...(res.warnings || [])];
     if (res.run?.models_from_cache) all.push(res.run.note);
     w.hidden = !all.length; w.innerHTML = all.length ? "<ul>" + all.map(x => `<li>${esc(x)}</li>`).join("") + "</ul>" : "";
-    hero(); kpis(); priceCharts(); indicatorCharts(); compare(); evaluation(); backtest(); trend();
+    hero(); kpis(); priceCharts(); indicatorCharts(); compare(); volatility(); evaluation(); backtest(); trend();
     $("disclaimer").textContent = res.disclaimer;
     document.title = `${res.meta.symbol} — Stock Trend Predictor`;
   }
@@ -90,7 +95,7 @@
     const shown = qt ? qt.price : data.last_close;
     $("hero").innerHTML = `
       <div><h2>${esc(meta.name)}</h2>
-        <span class="tag"><b>${esc(meta.symbol)}</b></span><span class="tag">${esc(meta.exchange)}</span>
+        <span class="tag"><b>${esc(meta.symbol)}</b></span><button type="button" class="xbtn" id="watchBtn" data-symbol="${esc(meta.symbol)}">☆ Add to watchlist</button><span class="tag">${esc(meta.exchange)}</span>
         <span class="tag">${esc(meta.currency || "currency n/a")}</span>${meta.instrument_type ? `<span class="tag">${esc(meta.instrument_type)}</span>` : ""}
         ${meta.timezone ? `<span class="tag">${esc(meta.timezone)}</span>` : ""}
         <p class="meta">${data.interpreted_from ? `Matched from “${esc(data.interpreted_from)}”. ` : ""}${altHtml()}</p></div>
@@ -100,6 +105,7 @@
         Last completed daily close: <b>${money(data.last_close)}</b> on ${esc(fdate(data.last_close_date))}<br>
         ${esc(data.freshness)}<br>
         Source: ${esc(data.provider)} · downloaded ${esc(fts(data.fetched_at))}${data.from_data_cache ? " (cached)" : ""} · ${data.rows} sessions (${esc(data.start)} → ${esc(data.end)})</p></div>`;
+    $("watchBtn").onclick = () => ST.watchAdd(meta.symbol, $("watchBtn"));
     $("hero").querySelectorAll("[data-alt]").forEach(a => a.onclick = () => { q.value = a.dataset.alt; run(false); });
   }
   function altHtml() {
@@ -112,14 +118,14 @@
 
   function kpis() {
     const f = F(), m = f.models, s = m[f.selected];
-    const mlN = f.best_ml, dlN = f.best_dl;
-    const rows = k => [mlN, dlN].filter(Boolean).map(n => { const b = m[n][k]; return `<tr${n === f.selected ? ' class="best"' : ""}><td>${esc(m[n].label)}${n === f.selected ? " ★" : ""}</td><td class="num">${money(b.pred_close)}</td><td class="num ${cls(b.change_pct)}">${pct(b.change_pct)}</td><td class="${dirCls(b.direction)}">${dirSym(b.direction)}</td></tr>`; }).join("");
+    const mlN = f.best_ml, dlN = f.best_dl, enN = f.ensemble;
+    const rows = k => [mlN, dlN, enN].filter(Boolean).map(n => { const b = m[n][k]; return `<tr${n === f.selected ? ' class="best"' : ""}><td>${esc(m[n].label)}${n === f.selected ? " ★" : ""}</td><td class="num">${money(b.pred_close)}</td><td class="num ${cls(b.change_pct)}">${pct(b.change_pct)}</td><td class="${dirCls(b.direction)}">${dirSym(b.direction)}</td></tr>`; }).join("");
     const card = (title, k) => { const b = s[k]; return `<div class="card kpi"><h2>${title} — ${esc(fdate(b.date))}</h2>
       <div class="big">${money(b.pred_close)}</div>
       <div class="row"><span class="${dirCls(b.direction)}"><b>${dirSym(b.direction)}</b> ${pct(b.change_pct)}</span>
         <span>${esc(f.interval_label)}: <b>${money(b.low)}</b> – <b>${money(b.high)}</b></span>
         <span>P(up) ≈ <b>${num(b.prob_up, 0)}%</b></span></div>
-      <table><thead><tr><th>ML vs DL</th><th>Predicted</th><th>Change</th><th>Direction</th></tr></thead><tbody>${rows(k)}</tbody></table>
+      <table><thead><tr><th>ML vs DL vs blend</th><th>Predicted</th><th>Change</th><th>Direction</th></tr></thead><tbody>${rows(k)}</tbody></table>
       ${k === "next_day" ? `<p class="meta">Selected model: <b>${esc(s.label)}</b> (lowest validation error vs naive). Reliability on unseen data: <span class="pill ${f.reliability === "Moderate" ? "up" : f.reliability === "Low" ? "flat" : "down"}">${esc(f.reliability)}</span></p>` :
         `<p class="meta">Estimated month-end close after ${f.horizon} trading sessions, applied to the latest close of ${money(f.base_close)} (${esc(f.as_of)}). Estimate only — not a guaranteed outcome.</p>`}</div>`; };
     $("kpis").innerHTML = card(f.next_session_in_progress ? "Today's close (session in progress)" : "Next trading day", "next_day") + card("Next month (≈21 sessions)", "month_end");
@@ -178,7 +184,7 @@
     const f = F(), names = Object.keys(f.models), base = f.base_close;
     const X = [f.as_of, ...f.models[names[0]].path.dates];
     const series = [{ type: "band", color: "var(--c1)", lo: [base, ...f.models[f.selected].path.low], hi: [base, ...f.models[f.selected].path.high], opacity: .09, tipLabel: "Selected model range" }];
-    names.forEach((n, i) => series.push({ name: f.models[n].label + (n === f.selected ? " ★" : ""), y: [base, ...f.models[n].path.pred], color: COLORS[i % 5], width: n === f.selected ? 2.6 : 1.5, dash: f.models[n].family === "DL" ? "6 3" : "" }));
+    names.forEach((n, i) => series.push({ name: f.models[n].label + (n === f.selected ? " ★" : ""), y: [base, ...f.models[n].path.pred], color: COLORS[i % 8], width: n === f.selected ? 2.6 : 1.5, dash: f.models[n].family === "DL" ? "6 3" : "" }));
     charts.cmp = new XYChart($("cmpChart"), { x: X, series, height: 300, tipFmt: v => v.toLocaleString(undefined, { maximumFractionDigits: 2 }), ariaLabel: "Model forecast comparison" });
     $("cmpTable").innerHTML = `<table><thead><tr><th>Model</th><th>Type</th><th>Next day</th><th>Change</th><th>Month-end</th><th>Change</th><th>Month-end range</th></tr></thead><tbody>` +
       names.map(n => { const m = f.models[n]; return `<tr${n === f.selected ? ' class="best"' : ""}><td>${esc(m.label)}${n === f.selected ? " ★" : ""}</td><td>${m.family}</td><td class="num">${money(m.next_day.pred_close)}</td><td class="num ${cls(m.next_day.change_pct)}">${pct(m.next_day.change_pct)}</td><td class="num">${money(m.month_end.pred_close)}</td><td class="num ${cls(m.month_end.change_pct)}">${pct(m.month_end.change_pct)}</td><td class="num">${money(m.month_end.low)} – ${money(m.month_end.high)}</td></tr>`; }).join("") + "</tbody></table>";
@@ -201,7 +207,11 @@
     $("evalNotes").innerHTML = `
       <p><b>Chronological split</b> (a ${s.embargo}-session gap separates blocks so overlapping targets never leak): train ${s.train} samples (${s.train_range[0]} → ${s.train_range[1]}), validation ${s.val} (${s.val_range[0]} → ${s.val_range[1]}), test ${s.test} (${s.test_range[0]} → ${s.test_range[1]}).</p>
       <p>${esc(E.selection_rule)} “MAE vs naive” compares with predicting that the price stays unchanged; negative means <i>worse</i> than doing nothing. Always-up direction baseline in this block: ${up == null ? "–" : num(Math.max(up, 100 - up), 1) + "%"}.</p>
-      <p>Intervals are the ${esc(f.interval_label)} from validation residuals; “coverage” is how often the real price fell inside it on the test block (ideal ≈ 80%).${E.lstm.backend ? ` LSTM backend: ${E.lstm.backend}, early-stopped at ~${E.lstm.epochs} epochs.` : ""}</p>
+      <p>Intervals are the ${esc(f.interval_label)} from validation residuals (centred on each forecast); “coverage” is how often the real price fell inside it on the test block (ideal ≈ 80%).</p>
+      ${Object.keys(E.deep || {}).length ? `<p><b>Deep-learning nets:</b> ${Object.entries(E.deep).map(([k, v]) => `${esc(k.toUpperCase())} (${esc(v.backend)}, early-stopped at ~${v.epochs} epochs)`).join("; ")}.</p>` : ""}
+      ${(E.tuning || []).length ? `<p><b>Tuned hyper-parameters</b> (time-aware CV inside the training block only): ${E.tuning.map(t => `${esc(t.label)}: ${t.changed ? esc(JSON.stringify(t.params)) : "defaults kept"}${t.cv_score != null ? ` (CV error ratio ${t.cv_score.toFixed(3)} vs ${t.default_cv_score.toFixed(3)} default)` : ""}`).join("; ")}.</p>` : ""}
+      ${Object.keys(E.ensemble_weights || {}).length ? `<p><b>Ensemble weights</b> (from validation error only): ${Object.entries(E.ensemble_weights).map(([k, v]) => `${esc(k)} ${(v * 100).toFixed(0)}%`).join(", ")}.</p>` : ""}
+      ${R.market_inputs?.used?.length ? `<p><b>Market inputs used:</b> ${R.market_inputs.used.map(u => `${esc(u.name)}${u.lag ? " (lagged 1 session)" : ""}`).join(", ")}. ${esc(R.market_inputs.note)}</p>` : `<p><b>Market inputs:</b> not used.</p>`}
       ${fi.length ? `<p style="margin-top:10px"><b>Top Random Forest features</b></p><div class="fi">${fi.map(x => `<span>${esc(x.feature)}</span><div class="b" style="width:${Math.max(2, x.importance / mx * 100)}%"></div><span>${(x.importance * 100).toFixed(1)}%</span>`).join("")}</div>` : ""}`;
   }
 
@@ -211,14 +221,38 @@
     $("btMeta").textContent = `${B.n} out-of-sample sessions (${B.dates[0]} → ${B.dates[B.n - 1]}). ${B.note}`;
     const pick = [f.best_ml, f.best_dl].filter(Boolean);
     const sp = [{ name: "Actual close", y: B.actual_close, color: "var(--c1)", width: 1.8 }, { name: "Naive (previous close)", y: B.naive_close, color: "var(--muted)", width: 1, dash: "2 3" }];
-    pick.forEach((n, i) => sp.push({ name: R.forecast.models[n].label, y: B.models[n].pred_close, color: COLORS[names.indexOf(n) % 5], width: 1.4, dash: i ? "6 3" : "" }));
+    pick.forEach((n, i) => sp.push({ name: R.forecast.models[n].label, y: B.models[n].pred_close, color: COLORS[names.indexOf(n) % 8], width: 1.4, dash: i ? "6 3" : "" }));
     charts.btp = new XYChart($("btPrice"), { x: B.dates, series: sp, height: 260, tipFmt: v => v.toLocaleString(undefined, { maximumFractionDigits: 2 }), ariaLabel: "Backtest predicted vs actual" });
     const se = [{ name: "Buy & hold", y: B.buy_hold.equity, color: "var(--c1)", width: 1.8 }];
-    names.forEach((n, i) => se.push({ name: R.forecast.models[n].label, y: B.models[n].equity, color: COLORS[i % 5], width: n === f.selected ? 2.2 : 1.2, hidden: !pick.includes(n) }));
+    names.forEach((n, i) => se.push({ name: R.forecast.models[n].label, y: B.models[n].equity, color: COLORS[i % 8], width: n === f.selected ? 2.2 : 1.2, hidden: !pick.includes(n) }));
     charts.bte = new XYChart($("btEquity"), { x: B.dates, series: se, height: 260, yFmt: v => v.toFixed(2), ariaLabel: "Backtest equity curves" });
     $("btTable").innerHTML = `<table><thead><tr><th>Strategy</th><th>Total return</th><th>Max drawdown</th><th>Trades</th><th>Days long</th><th>Win rate (long days)</th></tr></thead><tbody>
       <tr><td>Buy &amp; hold</td><td class="num ${cls(B.buy_hold.total_return)}">${pct(B.buy_hold.total_return * 100)}</td><td class="num">${pct(B.buy_hold.max_drawdown * 100)}</td><td class="num">–</td><td class="num">${B.n}</td><td class="num">–</td></tr>` +
       names.map(n => { const m = B.models[n]; return `<tr${n === f.selected ? ' class="best"' : ""}><td>${esc(R.forecast.models[n].label)}</td><td class="num ${cls(m.total_return)}">${pct(m.total_return * 100)}</td><td class="num">${pct(m.max_drawdown * 100)}</td><td class="num">${m.trades}</td><td class="num">${m.days_long}</td><td class="num">${m.hit_rate == null ? "–" : num(m.hit_rate, 1) + "%"}</td></tr>`; }).join("") + "</tbody></table>";
+  }
+
+
+  // ---------------- volatility
+  function volatility() {
+    const V = R.volatility, box = $("volBody");
+    if (!V || V.error) { box.innerHTML = `<p class="sub">${esc(V?.error || "Volatility forecast unavailable.")}</p>`; return; }
+    const f = F(), sel = V.selected, fc = V.forecast[sel], cur = V.current, L = n => (V.test.find(r => r.model === n)?.label || n);
+    const rows = Object.entries(V.forecast).map(([n, v]) => { const t = V.test.find(r => r.model === n);
+      return `<tr${n === sel ? ' class="best"' : ""}><td>${esc(L(n))}${n === sel ? " ★" : ""}</td><td class="num">${num(v["5"], 1)}%</td><td class="num">${num(v["10"], 1)}%</td><td class="num">${num(v["21"], 1)}%</td><td class="num">${num(t.horizons["21"].mae, 2)}</td><td class="num ${t.rel_persistence < 1 ? "up" : "down"}">${pct((1 - t.rel_persistence) * 100, 1)}</td><td class="num ${t.rel_ewma < 1 ? "up" : "down"}">${pct((1 - t.rel_ewma) * 100, 1)}</td><td class="num">${t.horizons["21"].corr == null ? "–" : num(t.horizons["21"].corr, 2)}</td></tr>`; }).join("");
+    box.innerHTML = `<div class="volgrid"><div class="kpi"><h2>Next 21 sessions — ${esc(L(sel))} ★</h2>
+        <div class="big">${num(fc["21"], 1)}%</div><div class="row"><span>annualised volatility</span></div>
+        <div class="row" style="margin-top:6px"><span>Typical daily move ≈ <b>±${num(V.expected_daily_move_pct, 2)}%</b></span></div>
+        <div class="row"><span>Volatility-implied 80% month range: <b>${money(V.month_range.low)} – ${money(V.month_range.high)}</b> (±${num(V.month_range.pct, 1)}%)</span></div>
+        <div class="row" style="margin-top:6px"><span>Now: 20-day realised <b>${num(cur.realised_20d, 1)}%</b> · 5-day <b>${num(cur.realised_5d, 1)}%</b> · EWMA <b>${num(cur.ewma, 1)}%</b></span></div>
+        <p class="meta"><span class="pill ${V.beats_persistence_test ? "up" : "down"}">${V.beats_persistence_test ? "Beat baseline on test" : "No edge over baseline on test"}</span></p></div>
+      <div><div id="volChart2"></div></div></div>
+      <div class="tablewrap"><table><thead><tr><th>Model</th><th>Forecast 5d</th><th>10d</th><th>21d</th><th>Test MAE (vol pts, 21d)</th><th>vs “stays same”</th><th>vs EWMA</th><th>Corr.</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="notes"><p>${esc(V.verdict)}</p><p>${esc(V.note)}</p>${(V.notes || []).map(n => `<p>${esc(n)}</p>`).join("")}</div>`;
+    const h = V.history, fd = f.models[f.selected].path.dates, n = h.dates.length;
+    charts.vol2 = new XYChart($("volChart2"), { x: [...h.dates, ...fd], height: 230, yFmt: v => v.toFixed(0) + "%", tipFmt: v => v.toFixed(1) + "%", ariaLabel: "Realised volatility and forecast",
+      shade: { from: n - 1, to: n + fd.length - 1 }, markers: [{ x: h.dates[n - 1], label: "Forecast →" }],
+      series: [{ name: "Realised vol (20d, annualised)", y: [...h.realised_20d, ...Array(fd.length).fill(null)], color: "var(--c1)", width: 1.6 },
+               { name: "Forecast (21 sessions)", y: [...Array(n - 1).fill(null), h.realised_20d[n - 1], ...Array(fd.length).fill(fc["21"])], color: "var(--c2)", width: 2.2, dash: "6 4" }] });
   }
 
   // ---------------- trend
@@ -237,4 +271,17 @@
       <tr><td>52-week high / low</td><td class="num">${money(S.high_52w)} / ${money(S.low_52w)}</td></tr>
       <tr><td>Avg volume (20d)</td><td class="num">${S.avg_volume_20d == null ? "–" : Math.round(S.avg_volume_20d).toLocaleString()}</td></tr></tbody></table>`;
   }
+
+  window.ST = {
+    esc, num, pct, cls, fdate, fts, moneyC, dirSym, dirCls, COLORS, jobRun,
+    get period() { return $("period").value; }, analyzeBody,
+    show(view) {
+      ["dashboard", "watchlist", "compare", "tracking"].forEach(v => { $("view-" + v).hidden = v !== view; });
+      document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+      document.dispatchEvent(new CustomEvent("viewchange", { detail: view }));
+    },
+    analyze(symbol) { q.value = symbol; run(false); },
+    watchAdd: null,
+  };
+  document.querySelectorAll("#nav button").forEach(b => b.onclick = () => ST.show(b.dataset.view));
 })();

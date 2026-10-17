@@ -91,7 +91,8 @@ def evaluate(train_res, fs, cfg: dict) -> dict:
     best = min(candidates, key=lambda m: models[m]["val_rel_mae"])
     best_ml = min([m for m in candidates if FAMILY[m] == "ML"], key=lambda m: models[m]["val_rel_mae"])
     dl = [m for m in candidates if FAMILY[m] == "DL"]
-    best_dl = dl[0] if dl else None
+    best_dl = min(dl, key=lambda m: models[m]["val_rel_mae"]) if dl else None
+    ens = "ensemble" if "ensemble" in candidates else None
 
     b = models[best]
     beats_val = b["val_rel_mae"] < 1.0
@@ -134,6 +135,6 @@ def evaluate(train_res, fs, cfg: dict) -> dict:
     return {"models": models, "baselines": {"naive": {"val": naive_v, "test": naive_t},
                                               "drift": {"val": horizon_metrics(train_res.pred_val["drift"], yv, cv, horizons),
                                                         "test": horizon_metrics(train_res.pred_test["drift"], yt, ct, horizons)}},
-            "horizons": horizons, "selected": best, "best_ml": best_ml, "best_dl": best_dl,
+            "horizons": horizons, "selected": best, "best_ml": best_ml, "best_dl": best_dl, "ensemble": ens,
             "reliability": reliability, "reliability_note": why, "beats_naive_val": beats_val,
             "beats_naive_test": beats_test, "backtest": backtest, "intervals": intervals}

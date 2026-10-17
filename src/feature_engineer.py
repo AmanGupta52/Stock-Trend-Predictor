@@ -6,7 +6,7 @@ cumulative log returns ln(C[t+h] / C[t]) for h = 1..H, i.e. a *future* quantity 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -24,6 +24,7 @@ class FeatureSet:
     close: pd.Series         # adjusted close aligned with X
     horizon: int
     seq_len: int
+    context_used: Optional[List[str]] = None
 
     @property
     def n_labeled(self) -> int:
@@ -34,7 +35,30 @@ class FeatureSet:
         return list(self.X.columns)
 
 
-def build_features(ohlcv: pd.DataFrame) -> pd.DataFrame:
+def context_features(ctx: pd.DataFrame, lr: pd.Series) -> pd.DataFrame:
+    """Features from aligned market-context series (index, VIX, FX, commodity, sector).
+
+    ``ctx`` columns are levels already aligned to the stock's sessions and lagged where the asset closes
+    after the stock does, so row t only contains information available when the stock's session t ended.
+    The FIRST column is the primary market index (used for beta / correlation / relative strength).
+    """
+    f = pd.DataFrame(index=ctx.index)
+    for col in ctx.columns:
+        s = ctx[col].where(ctx[col] > 0)
+        f[f"ctx_{col}_ret1"] = s.pct_change()
+        f[f"ctx_{col}_ret5"] = s.pct_change(5)
+        f[f"ctx_{col}_ret20"] = s.pct_change(20)
+        f[f"ctx_{col}_z60"] = ((s - s.rolling(60, min_periods=60).mean()) /
+                               s.rolling(60, min_periods=60).std().replace(0, np.nan)).clip(-5, 5)
+    prim = ctx.iloc[:, 0].where(ctx.iloc[:, 0] > 0)
+    mlr = np.log(prim).diff()
+    f["beta_60"] = (lr.rolling(60, min_periods=60).cov(mlr) / mlr.rolling(60, min_periods=60).var()).clip(-5, 5)
+    f["corr_60"] = lr.rolling(60, min_periods=60).corr(mlr)
+    f["rel_ret_20"] = lr.rolling(20, min_periods=20).sum() - mlr.rolling(20, min_periods=20).sum()
+    return f
+
+
+def build_features(ohlcv: pd.DataFrame, context: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Compute model features from a raw (Close/Adj Close) price frame. Uses adjusted prices."""
     a = adjust_ohlc(ohlcv)
     c, h, l, o, v = a["Close"], a["High"], a["Low"], a["Open"], a["Volume"]
@@ -67,6 +91,8 @@ def build_features(ohlcv: pd.DataFrame) -> pd.DataFrame:
     f["zscore_20"] = (c - sma(c, 20)) / c.rolling(20, min_periods=20).std().replace(0, np.nan)
     dow = a.index.dayofweek
     f["dow_sin"], f["dow_cos"] = np.sin(2 * np.pi * dow / 5), np.cos(2 * np.pi * dow / 5)
+    if context is not None and context.shape[1]:
+        f = f.join(context_features(context.reindex(f.index), lr))
     return f.replace([np.inf, -np.inf], np.nan)
 
 
@@ -76,8 +102,9 @@ def build_targets(close: pd.Series, horizon: int) -> pd.DataFrame:
     return pd.DataFrame({f"h{h}": lc.shift(-h) - lc for h in range(1, horizon + 1)}, index=close.index)
 
 
-def make_feature_set(ohlcv: pd.DataFrame, horizon: int = 21, seq_len: int = 20) -> FeatureSet:
-    feats = build_features(ohlcv)
+def make_feature_set(ohlcv: pd.DataFrame, horizon: int = 21, seq_len: int = 20,
+                     context: Optional[pd.DataFrame] = None) -> FeatureSet:
+    feats = build_features(ohlcv, context)
     valid = feats.dropna()
     # Rolling features are NaN only in the warm-up prefix; make sure nothing is silently dropped mid-series.
     first = valid.index[0]
@@ -90,4 +117,5 @@ def make_feature_set(ohlcv: pd.DataFrame, horizon: int = 21, seq_len: int = 20) 
     targets = build_targets(close, horizon)
     n_lab = int(targets.notna().all(axis=1).sum())
     Y = targets.iloc[:n_lab]
-    return FeatureSet(X=feats, Y=Y, close=close, horizon=horizon, seq_len=seq_len)
+    return FeatureSet(X=feats, Y=Y, close=close, horizon=horizon, seq_len=seq_len,
+                      context_used=list(context.columns) if context is not None and context.shape[1] else None)
