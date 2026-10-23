@@ -47,10 +47,10 @@
   function showError(msg) { const e = $("error"); e.hidden = !msg; e.textContent = msg || ""; }
   function setStatus(p, m) { $("status").hidden = p == null; if (p != null) { $("barfill").style.width = Math.round(p * 100) + "%"; $("statusMsg").textContent = `${Math.round(p * 100)}% — ${m}`; } }
 
-  function jobRun(body, onProgress) {
+  function jobRun(body, onProgress, url = "/api/analyze") {
     return new Promise(async (resolve, reject) => {
       try {
-        const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error?.message || "Request failed");
         let fails = 0;
@@ -274,9 +274,10 @@
 
   window.ST = {
     esc, num, pct, cls, fdate, fts, moneyC, dirSym, dirCls, COLORS, jobRun,
+    get sym() { return curSym; },
     get period() { return $("period").value; }, analyzeBody,
     show(view) {
-      ["dashboard", "watchlist", "compare", "tracking"].forEach(v => { $("view-" + v).hidden = v !== view; });
+      ["dashboard", "live", "watchlist", "compare", "tracking"].forEach(v => { $("view-" + v).hidden = v !== view; });
       document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
       document.dispatchEvent(new CustomEvent("viewchange", { detail: view }));
     },

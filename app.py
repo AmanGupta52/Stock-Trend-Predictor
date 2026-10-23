@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.compare import compare_stocks
 from src.data_fetcher import VALID_PERIODS, DataError
+from src.live import LiveEngine
 from src.pipeline import Analyzer, clean, load_config
 from src.tracker import resolve_pending, summarize
 
@@ -24,6 +25,7 @@ log = logging.getLogger("app")
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 cfg = load_config()
 analyzer = Analyzer(cfg)
+live = LiveEngine(analyzer.fetcher, cfg)
 executor = ThreadPoolExecutor(max_workers=2)
 jobs, jobs_lock = {}, threading.Lock()
 
@@ -171,6 +173,55 @@ def compare():
     except Exception:
         log.exception("compare failed")
         return jsonify(error={"code": "internal_error", "message": "Comparison failed; see the server log."}), 500
+
+
+# ------------------------------------------------------------------ live price + quick model
+def _run_live(job_id, query):
+    def progress(p, msg):
+        with jobs_lock:
+            jobs[job_id].update(progress=round(float(p), 3), message=msg)
+    try:
+        res = live.start(query, progress)
+        with jobs_lock:
+            jobs[job_id].update(status="done", progress=1.0, result=res, message="Done")
+    except DataError as err:
+        with jobs_lock:
+            jobs[job_id].update(status="error", error={"code": err.code, "message": err.message})
+    except Exception:
+        log.exception("live start failed for %r", query)
+        with jobs_lock:
+            jobs[job_id].update(status="error", error={"code": "internal_error",
+                                "message": "Could not start live mode. Details were written to the server log."})
+
+
+@app.post("/api/live/start")
+def live_start():
+    body = request.get_json(silent=True) or {}
+    query = str(body.get("query", "")).strip()
+    if not query:
+        return jsonify(error={"code": "empty_query", "message": "Enter a company name or stock symbol."}), 400
+    if len(query) > 60:
+        return jsonify(error={"code": "invalid_symbol", "message": "Search text is too long."}), 400
+    _prune()
+    job_id = uuid.uuid4().hex
+    with jobs_lock:
+        jobs[job_id] = {"status": "running", "progress": 0.0, "message": "Queued", "created": time.time()}
+    executor.submit(_run_live, job_id, query)
+    return jsonify(job_id=job_id)
+
+
+@app.get("/api/live/tick")
+def live_tick():
+    symbol = request.args.get("symbol", "").strip().upper()
+    if not symbol or len(symbol) > 20:
+        return jsonify(error={"code": "invalid_symbol", "message": "Give a stock symbol."}), 400
+    try:
+        return jsonify(clean(live.tick(symbol)))
+    except DataError as err:
+        return _err(err, 409 if err.code == "not_trained" else 502 if err.code in ("no_data", "provider_error", "network_error", "rate_limited") else 400)
+    except Exception:
+        log.exception("live tick failed for %s", symbol)
+        return jsonify(error={"code": "internal_error", "message": "Live update failed. Details are in the server log."}), 500
 
 
 # ------------------------------------------------------------------ forecast tracking

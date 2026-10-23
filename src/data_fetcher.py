@@ -199,6 +199,27 @@ class StockDataFetcher:
         s = df["Close"].replace([np.inf, -np.inf], np.nan).dropna()
         return s if len(s) > 60 else None
 
+    def fetch_quote(self, symbol: str) -> Dict[str, Any]:
+        """Latest available price: the last 1-minute bar of the most recent session, with its real timestamp.
+
+        Yahoo does not promise real-time data (many exchanges are delayed), so the caller must show ``time``.
+        """
+        if yf is None:
+            raise DataError("The 'yfinance' package is not installed. Run: pip install -r requirements.txt",
+                            "missing_dependency")
+        try:
+            h = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=False, actions=False)
+        except Exception as exc:
+            raise _classify_exception(exc) from exc
+        if h is not None and not h.empty:
+            h = h[h["Close"].notna() & (h["Close"] > 0)]
+        if h is None or h.empty:
+            raise DataError(f"No live quote returned for '{symbol}'.", "no_data")
+        ts = h.index[-1]
+        return {"price": float(h["Close"].iloc[-1]), "time": ts.isoformat(), "date": str(ts.date()),
+                "time_utc": ts.tz_convert("UTC").isoformat() if ts.tzinfo else ts.isoformat(),
+                "source": "Yahoo Finance 1-minute bar"}
+
     def get_sector(self, symbol: str) -> Optional[Dict[str, str]]:
         """Sector/industry of a stock (cached on disk). None if the provider does not say."""
         path = self.cache_dir / "sectors.json"

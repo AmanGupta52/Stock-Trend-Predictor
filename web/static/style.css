@@ -105,3 +105,5 @@ form.inline input{min-width:200px;width:auto;flex:1 1 200px}
 .volgrid{display:grid;grid-template-columns:minmax(200px,280px) 1fr;gap:16px}
 @media (max-width:760px){.volgrid{grid-template-columns:1fr}}
 td.actions{white-space:nowrap;text-align:right}
+.card.inner{background:transparent;margin-bottom:0}
+#lvPrice .price,#lvPred .price{margin:2px 0}

@@ -1,4 +1,4 @@
-# Stock Trend Predictor 2.1
+# Stock Trend Predictor 2.2
 
 Search any Indian or US stock, download its real daily history from **Yahoo Finance (`yfinance`)**, train
 ML (Ridge, Random Forest, Gradient Boosting, XGBoost) and deep-learning (LSTM) models on it, test them on data
@@ -44,6 +44,13 @@ period so the validation block stays clean.
 
 **Data honesty.** Data is *delayed / latest available* from Yahoo Finance and is never labelled real-time.
 The dashboard shows the last completed daily close and the provider's latest quote with its timestamp.
+
+## New in 2.2 - Live price and quick forecast (the "Live" tab)
+- **Current price, refreshed every 5 s** (`live.poll_seconds` in `config/config.yaml`). The server calls Yahoo at most once per `min_quote_interval_seconds` per symbol, however many tabs are open, and the browser pauses polling when the tab is hidden or you leave the Live tab.
+- **Quick model, trained once** (`src/live.py`): chronological 80 % / 20 % split of daily history. Ridge vs a small gradient-boosting model is chosen on a validation slice inside the 80 %; the last 20 % is only used to report accuracy (MAE, RMSE, MAPE, direction accuracy vs an always-up guess, error vs the "tomorrow = today" baseline, 80 % range coverage). The page says plainly when the model does not beat the baseline.
+- **No re-training on each price**: a tick only appends the new price as a provisional bar to the last ~300 daily bars, recomputes features for that tail (verified equal to a full recompute in `tests/test_live.py`) and predicts. If the price did not change, the cached forecast is returned. The daily tail is topped up in the background every 10 minutes; the model is not retrained until you press Start live again.
+- Only close-based features are used, so an unfinished intraday bar cannot distort them.
+- Honesty: Yahoo's latest 1-minute bar is shown with its own timestamp ("x min old"); it can be delayed and often will not change every 5 s. Not real-time. Not investment advice.
 
 ## New in 2.1
 - **Watchlist** (`/api/watchlist`, SQLite `.cache/app.db`): save stocks; one page shows latest price, change vs prior close and the next-day / month-end forecast from your most recent analysis ("Update forecast" retrains).

@@ -1,6 +1,6 @@
 app:
   name: "Stock Trend Predictor"
-  version: "2.1.0"
+  version: "2.2.0"
   host: "127.0.0.1"
   port: 5000
 
@@ -52,3 +52,11 @@ market_context:
     - {symbol: "^GSPC", name: "S&P 500",   lag: 1}
     - {symbol: "^VIX",  name: "VIX",       lag: 1}
     - {symbol: "CL=F",  name: "Crude oil", lag: 1}
+
+live:
+  poll_seconds: 5                 # browser asks for a fresh price this often
+  min_quote_interval_seconds: 4   # server never calls Yahoo more often than this per symbol (shared by all tabs)
+  tail_rows: 300                  # completed daily bars kept in memory for incremental feature updates
+  tail_refresh_seconds: 600       # how often the daily-bar tail is topped up (no retraining)
+  test_fraction: 0.20             # chronological 80/20 split for the quick model
+  max_quote_age_minutes: 20       # older quotes are flagged as stale / market closed

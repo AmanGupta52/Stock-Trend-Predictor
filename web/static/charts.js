@@ -79,7 +79,7 @@
       const nt = Math.max(2, Math.floor(iw / 90));
       for (let k = 0; k < nt; k++) {
         const i = Math.round(a + k * (n - 1) / Math.max(1, nt - 1)); const t = el("text", { x: this.px(i), y: Ht - 6, class: "tick", "text-anchor": k === 0 ? "start" : k === nt - 1 ? "end" : "middle" }, g);
-        t.textContent = shortDate(o.x[i]);
+        t.textContent = o.xFmt ? o.xFmt(o.x[i]) : shortDate(o.x[i]);
       }
       // series
       const bw = Math.max(1, Math.min(8, iw / n * 0.7));

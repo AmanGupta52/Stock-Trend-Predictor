@@ -2,7 +2,7 @@
 import importlib, sys, time, traceback
 
 failed = 0
-for mod in ("tests.test_core", "tests.test_pipeline_and_api", "tests.test_features_v2"):
+for mod in ("tests.test_core", "tests.test_pipeline_and_api", "tests.test_features_v2", "tests.test_live"):
     m = importlib.import_module(mod)
     for name in sorted(n for n in dir(m) if n.startswith("test_")):
         t = time.time()
